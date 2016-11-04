@@ -89,6 +89,12 @@ class CircuitBreaker(object):
         """
         return self._state
 
+    @state.setter
+    def state(self, value):
+        with self._lock:
+            if(not isinstance(self._state, value.__class__)):
+                self._state = value
+
     @property
     def current_state(self):
         """
@@ -109,8 +115,7 @@ class CircuitBreaker(object):
         """
         Adds an exception to the list of excluded exceptions.
         """
-        with self._lock:
-            self._excluded_exceptions.append(exception)
+        self._excluded_exceptions.append(exception)
 
     def add_excluded_exceptions(self, *exceptions):
         """
@@ -123,8 +128,7 @@ class CircuitBreaker(object):
         """
         Removes an exception from the list of excluded exceptions.
         """
-        with self._lock:
-            self._excluded_exceptions.remove(exception)
+        self._excluded_exceptions.remove(exception)
 
     def _inc_counter(self):
         """
@@ -149,16 +153,14 @@ class CircuitBreaker(object):
         Calls `func` with the given `args` and `kwargs` according to the rules
         implemented by the current state of this circuit breaker.
         """
-        with self._lock:
-            return self._state.call(func, *args, **kwargs)
+        return self._state.call(func, *args, **kwargs)
 
     def open(self):
         """
         Opens the circuit, e.g., the following calls will immediately fail
         until timeout elapses.
         """
-        with self._lock:
-            self._state = CircuitOpenState(self, self._state, notify=True)
+        self.state = CircuitOpenState(self, self._state, notify=True)
 
     def half_open(self):
         """
@@ -166,15 +168,13 @@ class CircuitBreaker(object):
         opens the circuit if the call fails (or closes the circuit if the call
         succeeds).
         """
-        with self._lock:
-            self._state = CircuitHalfOpenState(self, self._state, notify=True)
+        self.state = CircuitHalfOpenState(self, self._state, notify=True)
 
     def close(self):
         """
         Closes the circuit, e.g. lets the following calls execute as usual.
         """
-        with self._lock:
-            self._state = CircuitClosedState(self, self._state, notify=True)
+        self.state = CircuitClosedState(self, self._state, notify=True)
 
     def __call__(self, func):
         """
@@ -197,8 +197,7 @@ class CircuitBreaker(object):
         """
         Registers a listener for this circuit breaker.
         """
-        with self._lock:
-            self._listeners.append(listener)
+        self._listeners.append(listener)
 
     def add_listeners(self, *listeners):
         """
@@ -206,12 +205,12 @@ class CircuitBreaker(object):
         """
         for listener in listeners:
             self.add_listener(listener)
+
     def remove_listener(self, listener):
         """
         Unregisters a listener of this circuit breaker.
         """
-        with self._lock:
-            self._listeners.remove(listener)
+        self._listeners.remove(listener)
 
 
 class CircuitBreakerListener(object):
@@ -274,10 +273,11 @@ class CircuitBreakerState(object):
         Handles a failed call to the guarded operation.
         """
         if self._breaker.is_system_error(exc):
-            self._breaker._inc_counter()
-            self.on_failure(exc)
-            for listener in self._breaker.listeners:
-                listener.failure(self._breaker, exc)
+            with self._breaker._lock:
+                self._breaker._inc_counter()
+                self.on_failure(exc)
+                for listener in self._breaker.listeners:
+                    listener.failure(self._breaker, exc)
         else:
             self._handle_success()
         raise exc
@@ -286,10 +286,11 @@ class CircuitBreakerState(object):
         """
         Handles a successful call to the guarded operation.
         """
-        self._breaker._fail_counter = 0
-        self.on_success()
-        for listener in self._breaker.listeners:
-            listener.success(self._breaker)
+        with self._breaker._lock:
+            self._breaker._fail_counter = 0
+            self.on_success()
+            for listener in self._breaker.listeners:
+                listener.success(self._breaker)
 
     def call(self, func, *args, **kwargs):
         """
@@ -336,7 +337,7 @@ class CircuitBreakerState(object):
         Override this method to be notified when a call to the guarded
         operation succeeds.
         """
-        pass
+        self._breaker.close()
 
     def on_failure(self, exc):
         """
@@ -409,8 +410,10 @@ class CircuitOpenState(CircuitBreakerState):
             error_msg = 'Timeout not elapsed yet, circuit breaker still open'
             raise CircuitBreakerError(error_msg)
         else:
-            self._breaker.half_open()
-            self._breaker.call(func, *args, **kwargs)
+            with self._breaker._lock:
+                if(isinstance(self._breaker._state, CircuitOpenState)):
+                    self._breaker.half_open()
+                    self._breaker.call(func, *args, **kwargs)
 
 
 class CircuitHalfOpenState(CircuitBreakerState):
@@ -437,12 +440,6 @@ class CircuitHalfOpenState(CircuitBreakerState):
         """
         self._breaker.open()
         raise CircuitBreakerError('Trial call failed, circuit breaker opened')
-
-    def on_success(self):
-        """
-        Closes the circuit breaker.
-        """
-        self._breaker.close()
 
 
 class CircuitBreakerError(Exception):

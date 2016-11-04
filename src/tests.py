@@ -533,7 +533,7 @@ class CircuitBreakerThreadsTestCase(unittest.TestCase):
 
     def test_fail_max_thread_safety(self):
         """CircuitBreaker: it should not allow more failed calls than
-        'fail_max' setting.
+        'fail_max' setting + the number of threads running.
         """
         @self.breaker
         def err(): raise Exception()
@@ -549,5 +549,4 @@ class CircuitBreakerThreadsTestCase(unittest.TestCase):
 
         self.breaker.add_listener(SleepListener())
         self._start_threads(trigger_error, 3)
-        self.assertEqual(self.breaker.fail_max, self.breaker.fail_counter)
-
+        self.assertLess(self.breaker.fail_counter, self.breaker.fail_max + 3)
